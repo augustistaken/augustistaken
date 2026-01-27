@@ -616,13 +616,6 @@ def format_name(
     
     Returns:
         List of exactly 3 TwoLineDisplay objects
-    
-    Example:
-        >>> results = format_name("Prof. Dr. Jean-Pierre de la Fontaine III", 25)
-        >>> for i, display in enumerate(results, 1):
-        ...     print(f"Option {i} ({display.strategy}):")
-        ...     print(display)
-        ...     print()
     """
     formatter = NameFormatter(
         max_line_length,
@@ -631,3 +624,19 @@ def format_name(
         known_suffixes
     )
     return formatter.format(full_name)
+
+
+def main() -> None:
+    full_name = "Prof. Dr. Jean-Pierre de la Max de la Fontaine III"
+    max_len = 20
+
+    results = format_name(full_name, max_len)
+
+    for i, display in enumerate(results, 1):
+        print(f"Option {i} ({display.strategy}):")
+        print(display)
+        print()
+
+
+if __name__ == "__main__":
+    main()
