@@ -4,6 +4,50 @@
 - 💞️ I’m looking to collaborate on ...
 - 📫 How to reach me ...
 
+surname_prefixes = sorted({
+    # Romance
+    "al", "all", "alla", "alle", "allo",
+    "da", "dal", "dai", "dalla", "dalle", "das",
+    "de", "de la", "de las", "de los",
+    "dei", "degli", "del", "dela", "della", "dell", "dello", "des", "di", "do", "dos", "du",
+    "l", "la", "le", "les",
+
+    # Germanic / Low Countries
+    "af", "av",
+    "den", "der",
+    "in 't",
+    "op",
+    "te", "ten", "ter",
+    "van", "van de", "van den", "van der", "van 't", "van het",
+    "von", "von dem", "von den", "von der", "von und zu",
+    "zu", "zum", "zur",
+
+    # Celtic
+    "ab", "ap",
+    "mac", "mc", "mhic", "mic",
+    "ni", "nic",
+    "o'", "ua", "ui",
+
+    # Arabic (standardized to latin letters only)
+    "abu", "al", "an", "ar", "as", "ash", "at", "az",
+    "ben", "bin", "bint", "binti",
+    "ed", "el", "en", "er", "es", "esh", "et", "ez",
+    "ibn",
+    "umm",
+
+    # Hebrew / Aramaic traditions (standardized)
+    "bar", "bat", "ben", "bnai", "bnei",
+
+    # Slavic locative
+    "z", "ze",
+
+    # Greek / other
+    "papa", "papas", "pappas",
+
+    # Saints / titles
+    "san", "saint", "sainte", "santa", "santo", "st",
+})
+
 <!---
 augustistaken/augustistaken is a ✨ special ✨ repository because its `README.md` (this file) appears on your GitHub profile.
 You can click the Preview link to take a look at your changes.
