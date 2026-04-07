@@ -102,10 +102,7 @@ def fallback_shorten_candidates(token: str) -> List[Tuple[str, float]]:
 
     hyphen_parts = [p for p in token.split("-") if p]
     if len(hyphen_parts) >= 2:
-        joined = "-".join(
-            (p[:3] + "." if len(p) > 3 else p)
-            for p in hyphen_parts
-        )
+        joined = "-".join((p[:3] + "." if len(p) > 3 else p) for p in hyphen_parts)
         return [(joined, 0.65), (make_initial_form(token), 0.35)]
 
     if len(token) == 5:
@@ -132,13 +129,27 @@ def classify_token_action(original: str, rendered: str) -> int:
 
 
 def render_name(tokens: List[str], rendered_tokens: List[str], split_after: int) -> Dict[str, str]:
+    if split_after < 0:
+        line1 = ""
+        line2 = " ".join(x for x in rendered_tokens if x).strip()
+        return {"line1": line1, "line2": line2}
+
     line1 = " ".join(x for x in rendered_tokens[: split_after + 1] if x).strip()
     line2 = " ".join(x for x in rendered_tokens[split_after + 1 :] if x).strip()
     return {"line1": line1, "line2": line2}
 
 
 def valid_layout(line1: str, line2: str, max_chars_per_line: int) -> bool:
-    return bool(line1) and bool(line2) and len(line1) <= max_chars_per_line and len(line2) <= max_chars_per_line
+    line1 = normalize_space(line1)
+    line2 = normalize_space(line2)
+
+    if not line1 and not line2:
+        return False
+    if len(line1) > max_chars_per_line:
+        return False
+    if len(line2) > max_chars_per_line:
+        return False
+    return True
 
 
 def target_token_matches_source(tok: str, tgt: str) -> bool:
@@ -178,7 +189,6 @@ def align_tokens_to_target(full_tokens: List[str], target_tokens: List[str]) -> 
             continue
 
         tgt = normalize_space(target_tokens[j])
-
         if target_token_matches_source(tok, tgt):
             rendered.append(tgt)
             j += 1
@@ -202,15 +212,18 @@ def infer_example_from_lines(full_name: str, name_line1: str, name_line2: str) -
     line1_target_count = len(line1_tokens)
     split_after = None
 
-    for i, out_tok in enumerate(rendered_tokens):
-        if out_tok:
-            consumed += 1
-        if consumed == line1_target_count:
-            split_after = i
-            break
+    if line1_target_count == 0:
+        split_after = -1
+    else:
+        for i, out_tok in enumerate(rendered_tokens):
+            if out_tok:
+                consumed += 1
+            if consumed == line1_target_count:
+                split_after = i
+                break
 
     if split_after is None:
-        split_after = max(0, len(tokens) // 2 - 1)
+        split_after = max(-1, len(tokens) // 2 - 1)
 
     return {
         "tokens": tokens,
@@ -232,8 +245,8 @@ def custom_lines_are_logical(
     line1 = normalize_space(name_line1)
     line2 = normalize_space(name_line2)
 
-    if not line1 or not line2:
-        return False, None, "Both lines must be non-empty."
+    if not line1 and not line2:
+        return False, None, "At least one line must be non-empty."
 
     if len(line1) > max_chars_per_line or len(line2) > max_chars_per_line:
         return False, None, f"Each line must be <= {max_chars_per_line} characters."
@@ -244,8 +257,8 @@ def custom_lines_are_logical(
     if normalize_space(rebuilt["line1"]) != line1 or normalize_space(rebuilt["line2"]) != line2:
         return False, None, "Custom lines must follow original token order and use keep/initial/shorten/drop forms only."
 
-    if sum(1 for x in ex["rendered_tokens"] if x) < 2:
-        return False, None, "Custom choice must keep at least two visible pieces of the name."
+    if sum(1 for x in ex["rendered_tokens"] if x) < 1:
+        return False, None, "Custom choice must keep at least one visible piece of the name."
 
     return True, ex, "OK"
 
@@ -279,10 +292,8 @@ class ShortenLexicon:
         rendered = normalize_space(rendered)
 
         self.token_to_forms[key][rendered] += 1
-
         if position is not None:
             self.token_pos_to_forms[(key, int(position))][rendered] += 1
-
         if action is not None:
             self.token_action_to_forms[key][int(action)][rendered] += 1
 
@@ -367,9 +378,6 @@ class TokenPositionMemory:
             for pos, (tok, act) in enumerate(zip(ex["tokens"], ex["actions"])):
                 self.update(tok, pos, act, strength=1)
 
-    def get_counts(self, token: str, position: int) -> List[int]:
-        return list(self.stats[(canonical_token(token), int(position))])
-
     def get_log_prior(self, token: str, position: int) -> torch.Tensor:
         counts = self.stats[(canonical_token(token), int(position))]
         total = sum(counts)
@@ -378,7 +386,6 @@ class TokenPositionMemory:
 
     def total_support(self, token: str, position: int) -> int:
         counts = self.stats[(canonical_token(token), int(position))]
-        # subtract Laplace prior so "real" support is easier to reason about
         return max(0, sum(counts) - self.num_actions)
 
     def to_dict(self) -> dict:
@@ -401,8 +408,8 @@ class TokenPositionMemory:
 
 class RecentExactNameMemory:
     """
-    Stored up to max_size names for later explicit retraining or review.
-    Not used directly in prediction.
+    Stored for later explicit retraining.
+    Not used in prediction.
     """
     def __init__(self, max_size: int = 200):
         self.max_size = max_size
@@ -542,6 +549,10 @@ def collate_batch(batch: List[dict]) -> dict:
 
 
 class CharTokenEncoder(nn.Module):
+    """
+    Encodes the characters inside each token.
+    It helps the model understand token shape and morphology, especially for rare or unseen names.
+    """
     def __init__(self, char_vocab_size: int, char_emb_dim: int = 24, char_hidden: int = 32):
         super().__init__()
         self.emb = nn.Embedding(char_vocab_size, char_emb_dim, padding_idx=PAD_ID)
@@ -918,14 +929,9 @@ class NameShortenerService:
 
     def _dynamic_memory_bias(self, base_logits: torch.Tensor, token: str, position: int) -> torch.Tensor:
         """
-        Scale memory bias so its useful part is roughly comparable to the model signal
-        for this token-position, instead of using a fixed constant.
-
-        Logic:
-        - get model top-vs-second gap for this token-position
-        - get memory top-vs-second gap
-        - choose a weight so memory gap is close to model gap
-        - damp if support is still low
+        Dynamic scaling:
+        match memory usefulness to roughly the same order of magnitude
+        as the model's signal for this token-position.
         """
         mem_log_prior = self.memory.get_log_prior(token, position)
         support = self.memory.total_support(token, position)
@@ -939,23 +945,18 @@ class NameShortenerService:
         mem_vals = torch.sort(mem_log_prior.detach().cpu(), descending=True).values
         mem_gap = float(mem_vals[0] - mem_vals[1]) if len(mem_vals) > 1 else float(mem_vals[0].abs())
 
-        # Support factor rises smoothly, so a few updates matter, and many updates matter more.
-        support_factor = 1.0 - math.exp(-support / 4.0)
-
-        # If memory is nearly flat, avoid exploding weights.
         if mem_gap < 1e-6:
             return torch.zeros_like(mem_log_prior)
 
-        # Match the memory margin to about 90% of the model margin for this token-position.
-        target_gap = 0.90 * model_gap
+        # More support -> trust memory more.
+        support_factor = 1.0 - math.exp(-support / 4.0)
+
+        # Aim for memory gap close to model gap.
+        target_gap = 0.95 * model_gap
         weight = target_gap / mem_gap
+        weight *= (0.40 + 0.60 * support_factor)
 
-        # Blend in support so one update moves things, but many consistent updates move them more.
-        weight *= (0.35 + 0.65 * support_factor)
-
-        # Keep sane bounds.
         weight = max(0.10, min(6.0, weight))
-
         return weight * mem_log_prior
 
     def _dedupe_candidates(self, candidates: List[dict], topk: int) -> List[dict]:
@@ -963,7 +964,10 @@ class NameShortenerService:
         results = []
 
         for c in sorted(candidates, key=lambda x: x["score"], reverse=True):
-            key = (normalize_space(c["line1"]).casefold(), normalize_space(c["line2"]).casefold())
+            key = (
+                normalize_space(c["line1"]).casefold(),
+                normalize_space(c["line2"]).casefold(),
+            )
             if key not in seen:
                 seen.add(key)
                 results.append(c)
@@ -972,33 +976,35 @@ class NameShortenerService:
 
         return results
 
-    def _extract_line_views(self, combined_candidates: List[dict], topk: int = 3) -> Dict[str, List[dict]]:
+    def _extract_separate_line_views(self, candidates: List[dict], topk: int = 3) -> Dict[str, List[dict]]:
         line1_best = {}
         line2_best = {}
 
-        for cand in combined_candidates:
-            l1_key = normalize_space(cand["line1"]).casefold()
-            if l1_key not in line1_best or cand["score"] > line1_best[l1_key]["score"]:
-                line1_best[l1_key] = {
-                    "line1": cand["line1"],
-                    "score": cand["score"],
-                    "from_pair": {"line1": cand["line1"], "line2": cand["line2"]},
-                }
+        for cand in candidates:
+            l1 = normalize_space(cand["line1"])
+            l2 = normalize_space(cand["line2"])
 
-            l2_key = normalize_space(cand["line2"]).casefold()
-            if l2_key not in line2_best or cand["score"] > line2_best[l2_key]["score"]:
-                line2_best[l2_key] = {
-                    "line2": cand["line2"],
-                    "score": cand["score"],
-                    "from_pair": {"line1": cand["line1"], "line2": cand["line2"]},
-                }
+            if l1:
+                key1 = l1.casefold()
+                if key1 not in line1_best or cand["score"] > line1_best[key1]["score"]:
+                    line1_best[key1] = {
+                        "line1": l1,
+                        "score": cand["score"],
+                        "source_pair": {"line1": cand["line1"], "line2": cand["line2"]},
+                    }
 
-        top_line1 = sorted(line1_best.values(), key=lambda x: x["score"], reverse=True)[:topk]
-        top_line2 = sorted(line2_best.values(), key=lambda x: x["score"], reverse=True)[:topk]
+            if l2:
+                key2 = l2.casefold()
+                if key2 not in line2_best or cand["score"] > line2_best[key2]["score"]:
+                    line2_best[key2] = {
+                        "line2": l2,
+                        "score": cand["score"],
+                        "source_pair": {"line1": cand["line1"], "line2": cand["line2"]},
+                    }
 
         return {
-            "line1_top3": top_line1,
-            "line2_top3": top_line2,
+            "line1_top3": sorted(line1_best.values(), key=lambda x: x["score"], reverse=True)[:topk],
+            "line2_top3": sorted(line2_best.values(), key=lambda x: x["score"], reverse=True)[:topk],
         }
 
     @torch.no_grad()
@@ -1009,15 +1015,11 @@ class NameShortenerService:
         topk_actions_per_token: int = 3,
         topk_renderings_per_token: int = 3,
         topk_results: int = 3,
-        candidate_pool_size: int = 30,
+        candidate_pool_size: int = 40,
     ) -> Dict[str, List[dict]]:
         tokens = tokenize_name(full_name)
-        if len(tokens) < 2:
-            return {
-                "combined_top3": [],
-                "line1_top3": [],
-                "line2_top3": [],
-            }
+        if len(tokens) < 1:
+            return {"line1_top3": [], "line2_top3": []}
 
         batch = self._encode_single_name(tokens)
         out = self.model(
@@ -1059,15 +1061,21 @@ class NameShortenerService:
 
         def backtrack_renderings(i: int, actions: List[int], rendered_tokens: List[str], base_score: float):
             if i == len(tokens):
-                for split_after in range(len(tokens) - 1):
+                for split_after in range(-1, len(tokens)):
                     lines = render_name(tokens, rendered_tokens, split_after)
                     line1, line2 = lines["line1"], lines["line2"]
 
                     if not valid_layout(line1, line2, max_chars_per_line):
                         continue
 
-                    score = base_score + split_log_probs[split_after].item()
-                    score -= abs(len(line1) - len(line2)) * 0.03
+                    score = base_score
+                    if len(tokens) > 0:
+                        split_idx = max(0, min(len(tokens) - 1, split_after if split_after >= 0 else 0))
+                        score += split_log_probs[split_idx].item()
+
+                    if line1 and line2:
+                        score -= abs(len(line1) - len(line2)) * 0.03
+
                     score -= 0.08 * sum(1 for a in actions if a == ACTION_DROP)
 
                     candidates.append({
@@ -1098,14 +1106,8 @@ class NameShortenerService:
 
         backtrack_actions(0, [], 0.0)
 
-        combined_candidates = self._dedupe_candidates(candidates, topk=candidate_pool_size)
-        views = self._extract_line_views(combined_candidates, topk=topk_results)
-
-        return {
-            "combined_top3": combined_candidates[:topk_results],
-            "line1_top3": views["line1_top3"],
-            "line2_top3": views["line2_top3"],
-        }
+        deduped_candidates = self._dedupe_candidates(candidates, topk=candidate_pool_size)
+        return self._extract_separate_line_views(deduped_candidates, topk=topk_results)
 
     @torch.no_grad()
     def predict_top3(
@@ -1115,14 +1117,14 @@ class NameShortenerService:
         topk_actions_per_token: int = 3,
         topk_renderings_per_token: int = 3,
         topk_results: int = 3,
-    ) -> List[dict]:
+    ) -> Dict[str, List[dict]]:
         return self.predict_with_views(
             full_name=full_name,
             max_chars_per_line=max_chars_per_line,
             topk_actions_per_token=topk_actions_per_token,
             topk_renderings_per_token=topk_renderings_per_token,
             topk_results=topk_results,
-        )["combined_top3"]
+        )
 
     def online_update_from_labeled_lines(
         self,
@@ -1135,28 +1137,21 @@ class NameShortenerService:
         lr: float = 5e-4,
         local_strength: int = 6,
     ) -> None:
-        """
-        Default:
-        - store exact example for future explicit retraining
-        - update token-position memory strongly
-        - update shorten lexicon
-        - do NOT update model weights
-
-        Use update_model=True only when you explicitly want a global update path.
-        """
         ex = infer_example_from_lines(full_name, name_line1, name_line2)
 
-        # Stored only for future explicit global update.
+        # Store for later explicit global retraining.
         self.recent_exact_name_memory.update(full_name, name_line1, name_line2)
 
         # Local non-global memory update.
         for pos, (tok, act) in enumerate(zip(ex["tokens"], ex["actions"])):
             self.memory.update(tok, pos, act, strength=local_strength)
 
+        # Local rendering update.
         for pos, (tok, act, rendered) in enumerate(zip(ex["tokens"], ex["actions"], ex["rendered_tokens"])):
             if rendered:
                 self.shorten_lexicon.update(tok, rendered, position=pos, action=act)
 
+        # Default: do not touch the shared model.
         if not update_model or steps <= 0:
             self.model.eval()
             return
