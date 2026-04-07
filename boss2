@@ -39,7 +39,7 @@ def ensure_service():
     if ARTIFACT_DIR.exists() and (ARTIFACT_DIR / "model.pt").exists() and artifacts_match_current_data(meta):
         print("Loading existing artifacts...")
         service = NameShortenerService.load(str(ARTIFACT_DIR))
-        return service, train_examples
+        return service, train_examples, valid_examples
 
     print("Training a new model...")
     service = NameShortenerService.from_examples(train_examples)
@@ -47,13 +47,21 @@ def ensure_service():
     service.save(str(ARTIFACT_DIR))
     ARTIFACT_DIR.mkdir(exist_ok=True)
     META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    return service, train_examples
+    return service, train_examples, valid_examples
 
 
-def print_top3(preds):
-    print("\nTop suggestions:")
-    for i, p in enumerate(preds, start=1):
+def print_views(views):
+    print("\nCombined top suggestions:")
+    for i, p in enumerate(views["combined_top3"], start=1):
         print(f"{i}. {p['line1']} | {p['line2']} | score={p['score']}")
+
+    print("\nTop 3 line 1:")
+    for i, p in enumerate(views["line1_top3"], start=1):
+        print(f"{i}. {p['line1']} | score={p['score']}")
+
+    print("\nTop 3 line 2:")
+    for i, p in enumerate(views["line2_top3"], start=1):
+        print(f"{i}. {p['line2']} | score={p['score']}")
 
 
 def do_online_update(service, full_name, line1, line2):
@@ -64,32 +72,78 @@ def do_online_update(service, full_name, line1, line2):
         update_model=False,
         replay_examples=None,
         steps=0,
+        local_strength=6,
     )
     service.save(str(ARTIFACT_DIR))
-    print("Updated recent specific memory for this name.")
+    print("Updated local non-global memory and stored recent example for later global retraining.")
+
+
+def maybe_do_global_update(service, train_examples, valid_examples):
+    threshold = 100
+    ready = service.ready_for_global_update(threshold=threshold)
+    print(f"\nRecent stored examples: {service.recent_examples_count()} / {threshold}")
+    if not ready:
+        print("Not enough recent examples yet for global update.")
+        return
+
+    confirm = input("Run explicit global update from recent examples now? [y/N]: ").strip().lower()
+    if confirm != "y":
+        return
+
+    ok = service.global_update_from_recent(
+        base_train_examples=train_examples,
+        valid_examples=valid_examples,
+        threshold=threshold,
+        epochs=8,
+        batch_size=16,
+        lr=5e-4,
+        clear_recent_after=False,
+    )
+    if ok:
+        service.save(str(ARTIFACT_DIR))
+        print("Global update completed and saved.")
+    else:
+        print("Global update did not run.")
 
 
 def main():
-    service, train_examples = ensure_service()
+    service, train_examples, valid_examples = ensure_service()
 
     while True:
-        full_name = input("\nFull name (or 'quit'): ").strip()
-        if full_name.lower() in {"quit", "exit"}:
+        print("\nMenu:")
+        print("1. Predict name")
+        print("2. Explicit global update from recent examples")
+        print("3. Quit")
+        menu = input("Choose: ").strip()
+
+        if menu == "3":
             break
 
-        preds = service.predict_top3(full_name, max_chars_per_line=22)
-        if not preds:
+        if menu == "2":
+            maybe_do_global_update(service, train_examples, valid_examples)
+            continue
+
+        if menu != "1":
+            print("Unknown option.")
+            continue
+
+        full_name = input("\nFull name: ").strip()
+        if not full_name:
+            continue
+
+        views = service.predict_with_views(full_name, max_chars_per_line=22)
+        if not views["combined_top3"]:
             print("No valid 2-line suggestions found.")
             continue
 
-        print_top3(preds)
-        print("4. Enter a custom 2-line choice")
-        choice = input("Pick 1, 2, 3, 4, or press Enter to skip: ").strip()
+        print_views(views)
+        print("\n4. Enter a custom 2-line choice")
+        choice = input("Pick 1, 2, 3, 4, or press Enter to skip update: ").strip()
 
         if choice in {"1", "2", "3"}:
             idx = int(choice) - 1
-            if idx < len(preds):
-                picked = preds[idx]
+            if idx < len(views["combined_top3"]):
+                picked = views["combined_top3"][idx]
                 do_online_update(service, full_name, picked["line1"], picked["line2"])
             else:
                 print("That option was not available.")
@@ -114,14 +168,14 @@ def main():
             print("Inferred rendered tokens:", inferred_example["rendered_tokens"])
             print("Inferred actions:", inferred_example["actions"])
 
-            confirm = input("Use this for specific online update? [y/N]: ").strip().lower()
+            confirm = input("Use this for local update? [y/N]: ").strip().lower()
             if confirm == "y":
                 do_online_update(service, full_name, custom_line1, custom_line2)
             else:
-                print("Skipped online update.")
+                print("Skipped update.")
 
         else:
-            print("Skipped online update.")
+            print("Skipped update.")
 
 
 if __name__ == "__main__":
