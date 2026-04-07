@@ -50,17 +50,13 @@ def ensure_service():
     return service, train_examples, valid_examples
 
 
-def print_views(views):
-    print("\nCombined top suggestions:")
-    for i, p in enumerate(views["combined_top3"], start=1):
-        print(f"{i}. {p['line1']} | {p['line2']} | score={p['score']}")
-
+def print_top3(preds):
     print("\nTop 3 line 1:")
-    for i, p in enumerate(views["line1_top3"], start=1):
+    for i, p in enumerate(preds["line1_top3"], start=1):
         print(f"{i}. {p['line1']} | score={p['score']}")
 
     print("\nTop 3 line 2:")
-    for i, p in enumerate(views["line2_top3"], start=1):
+    for i, p in enumerate(preds["line2_top3"], start=1):
         print(f"{i}. {p['line2']} | score={p['score']}")
 
 
@@ -75,18 +71,19 @@ def do_online_update(service, full_name, line1, line2):
         local_strength=6,
     )
     service.save(str(ARTIFACT_DIR))
-    print("Updated local non-global memory and stored recent example for later global retraining.")
+    print("Updated local memory and stored recent example for possible future global retraining.")
 
 
 def maybe_do_global_update(service, train_examples, valid_examples):
     threshold = 100
-    ready = service.ready_for_global_update(threshold=threshold)
-    print(f"\nRecent stored examples: {service.recent_examples_count()} / {threshold}")
-    if not ready:
+    current = service.recent_examples_count()
+    print(f"\nRecent stored examples: {current}/{threshold}")
+
+    if not service.ready_for_global_update(threshold=threshold):
         print("Not enough recent examples yet for global update.")
         return
 
-    confirm = input("Run explicit global update from recent examples now? [y/N]: ").strip().lower()
+    confirm = input("Run explicit global update now? [y/N]: ").strip().lower()
     if confirm != "y":
         return
 
@@ -131,26 +128,60 @@ def main():
         if not full_name:
             continue
 
-        views = service.predict_with_views(full_name, max_chars_per_line=22)
-        if not views["combined_top3"]:
-            print("No valid 2-line suggestions found.")
+        preds = service.predict_top3(full_name, max_chars_per_line=22)
+        if not preds["line1_top3"] and not preds["line2_top3"]:
+            print("No valid suggestions found.")
             continue
 
-        print_views(views)
-        print("\n4. Enter a custom 2-line choice")
-        choice = input("Pick 1, 2, 3, 4, or press Enter to skip update: ").strip()
+        print_top3(preds)
 
-        if choice in {"1", "2", "3"}:
-            idx = int(choice) - 1
-            if idx < len(views["combined_top3"]):
-                picked = views["combined_top3"][idx]
-                do_online_update(service, full_name, picked["line1"], picked["line2"])
-            else:
-                print("That option was not available.")
+        print("\nChoose:")
+        print("1. Pick suggested line 1 and line 2 separately")
+        print("2. Enter custom line 1 and/or line 2")
+        print("Press Enter to skip update")
 
-        elif choice == "4":
-            custom_line1 = normalize_space(input("Custom line 1: "))
-            custom_line2 = normalize_space(input("Custom line 2: "))
+        mode = input("Choice: ").strip()
+
+        if mode == "1":
+            line1_choice = input("Pick line 1 option (1/2/3 or Enter for empty): ").strip()
+            line2_choice = input("Pick line 2 option (1/2/3 or Enter for empty): ").strip()
+
+            chosen_line1 = ""
+            chosen_line2 = ""
+
+            if line1_choice in {"1", "2", "3"}:
+                idx = int(line1_choice) - 1
+                if idx < len(preds["line1_top3"]):
+                    chosen_line1 = preds["line1_top3"][idx]["line1"]
+
+            if line2_choice in {"1", "2", "3"}:
+                idx = int(line2_choice) - 1
+                if idx < len(preds["line2_top3"]):
+                    chosen_line2 = preds["line2_top3"][idx]["line2"]
+
+            ok, inferred_example, message = custom_lines_are_logical(
+                full_name,
+                chosen_line1,
+                chosen_line2,
+                max_chars_per_line=22,
+            )
+            if not ok:
+                print(f"Choice rejected: {message}")
+                continue
+
+            print("\nChosen result:")
+            print(f"line1: {chosen_line1}")
+            print(f"line2: {chosen_line2}")
+            print("Inferred rendered tokens:", inferred_example["rendered_tokens"])
+            print("Inferred actions:", inferred_example["actions"])
+
+            confirm = input("Use this for local update? [y/N]: ").strip().lower()
+            if confirm == "y":
+                do_online_update(service, full_name, chosen_line1, chosen_line2)
+
+        elif mode == "2":
+            custom_line1 = normalize_space(input("Custom line 1 (Enter allowed): "))
+            custom_line2 = normalize_space(input("Custom line 2 (Enter allowed): "))
 
             ok, inferred_example, message = custom_lines_are_logical(
                 full_name,
@@ -171,8 +202,6 @@ def main():
             confirm = input("Use this for local update? [y/N]: ").strip().lower()
             if confirm == "y":
                 do_online_update(service, full_name, custom_line1, custom_line2)
-            else:
-                print("Skipped update.")
 
         else:
             print("Skipped update.")
